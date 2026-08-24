@@ -1,0 +1,6 @@
+aiogram>=3.4,<4.0
+openpyxl>=3.1
+python-dotenv>=1.0
+# SharePoint / OneDrive upload via Microsoft Graph (optional, only used if configured)
+msal>=1.28
+requests>=2.31

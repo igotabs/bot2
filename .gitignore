@@ -1,0 +1,10 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+reports.xlsx
+failed_reports.json
+media/
+bot.out.log
+bot.err.log

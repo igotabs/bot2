@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.git/
+.gitignore
+*.md
+reports.xlsx
+failed_reports.json
+media/
+file-*.txt
