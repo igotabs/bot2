@@ -5,14 +5,15 @@ single always-on container such as Azure Container Instances).
 
 import asyncio
 import logging
+import os
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 import config
-from handlers import commands, report
-from utils import sharepoint
+from handlers import admin, commands, report
+from utils import sharepoint, single_instance
 
 logging.basicConfig(
     level=getattr(logging, config.LOG_LEVEL, logging.INFO),
@@ -24,12 +25,21 @@ logger = logging.getLogger("bot")
 async def main() -> None:
     config.validate()
 
+    # Hard single-instance guarantee: if another bot process already holds the
+    # OS lock, refuse to start so two pollers can never conflict.
+    try:
+        single_instance.acquire(os.getenv("LOCK_PATH", "./.bot.lock"))
+    except single_instance.AlreadyRunning as exc:
+        logger.error("%s Refusing to start a second instance.", exc)
+        return
+
     bot = Bot(
         token=config.BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dp = Dispatcher()
     dp.include_router(commands.router)
+    dp.include_router(admin.router)
     dp.include_router(report.router)
 
     # If SharePoint is configured, pull the current workbook so we append to it

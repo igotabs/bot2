@@ -1,8 +1,9 @@
 """
-FSM workflow for collecting structured service-quality feedback.
+FSM workflow for structured field-data collection.
 
 Flow:
-    /report -> step_id1 -> step_id2 -> step_id3 -> step_id4
+    /report -> step_id1 (target identifier) -> step_id2 (address)
+            -> step_id3 (schedule) -> step_id4 (location)
             -> step_media (optional) -> step_contact (optional)
             -> save to Excel -> post_menu ("add another" / "finish")
 
@@ -39,7 +40,7 @@ from aiogram.types import (
     Message,
 )
 from utils.config_loader import CONFIG
-from utils import excel_report, notifier, sharepoint
+from utils import deeplink, excel_report, notifier, sharepoint
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -50,25 +51,23 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 RATE_LIMIT_MINUTES = int(os.getenv("RATE_LIMIT_MINUTES", "15"))
 DUPLICATE_WINDOW_HOURS = int(os.getenv("DUPLICATE_WINDOW_HOURS", "24"))
-EXCEL_PATH = os.getenv("EXCEL_PATH", "./reports.xlsx")
+EXCEL_PATH = os.getenv("EXCEL_PATH", "C:/Users/oleg/OneDrive - ФІЗИЧНА ОСОБА-ПІДПРИЄМЕЦЬ СТЕБЛЄВ ОЛЕГ ІГОРОВИЧ/night/reports.xlsx")
 QUEUE_PATH = os.getenv("QUEUE_PATH", "./failed_reports.json")
 MEDIA_DIR = Path(os.getenv("MEDIA_DIR", "./media"))
-# When true, media is downloaded into MEDIA_DIR and the local path is stored;
-# otherwise only the Telegram file_id is kept.
 SAVE_MEDIA_FILES = os.getenv("SAVE_MEDIA_FILES", "1").strip() not in ("0", "false", "False", "")
 
 EXCEL_COLUMNS = ["Timestamp", "ID1", "ID2", "ID3", "ID4", "Media_Ref", "Contact", "User_Hash"]
 
 # Validation thresholds
-MIN_LEN_ID1 = 2
+MIN_LEN_ID1 = 3
 MIN_LEN_ID2 = 5
 MIN_LEN_ID3 = 10
 MIN_LEN_ID4 = 10
 
-# Service markers that a valid ID2 (branch/office/department) is expected to contain.
+# Address markers expected in ID2 (street, building, district, etc.)
 ID2_MARKERS = (
-    "№", "#", "id", "branch", "dept", "department", "service", "office",
-    "філія", "філіал", "відділ", "відділення", "департамент", "центр", "каса",
+    "вул", "просп", "бул", "пров", "пл", "буд", "під", "жк", "район",
+    "кв", "шосе", "наб", "будинок", "квартира", "поверх", "корпус", "мікрорайон",
 )
 
 
@@ -89,7 +88,6 @@ class ReportState(StatesGroup):
 # In-memory tracking (per-process). For multi-worker deploys move to Redis/DB.
 # --------------------------------------------------------------------------- #
 user_last_report: Dict[int, datetime] = {}
-# Each entry: (user_hash, id1, id2_normalized, created_at)
 recent_reports: List[Tuple[str, str, str, datetime]] = []
 
 excel_lock = asyncio.Lock()
@@ -100,7 +98,6 @@ queue_lock = asyncio.Lock()
 # Helpers
 # --------------------------------------------------------------------------- #
 def get_user_hash(user_id: int) -> str:
-    """Anonymize a Telegram user id to a short, non-reversible token."""
     return hashlib.sha256(str(user_id).encode()).hexdigest()[:12]
 
 
@@ -109,7 +106,6 @@ def _normalize(text: str) -> str:
 
 
 def check_rate_limit(user_id: int) -> Tuple[bool, int]:
-    """Return (is_limited, minutes_to_wait)."""
     now = datetime.now()
     last = user_last_report.get(user_id)
     if last is not None:
@@ -128,7 +124,6 @@ def _prune_recent(now: Optional[datetime] = None) -> None:
 
 
 def check_duplicate(user_hash: str, id1: str, id2: str) -> bool:
-    """True if this (user_hash, id1, id2) was already submitted within the window."""
     _prune_recent()
     id1_n, id2_n = _normalize(id1), _normalize(id2)
     return any(
@@ -172,7 +167,6 @@ def get_post_menu_kb() -> InlineKeyboardMarkup:
 # Persistence
 # --------------------------------------------------------------------------- #
 async def queue_failed_report(data: dict) -> None:
-    """Append a row that failed to reach Excel to a JSON retry queue."""
     async with queue_lock:
         try:
             queue: List[dict] = []
@@ -184,49 +178,20 @@ async def queue_failed_report(data: dict) -> None:
                 json.dump(queue, f, ensure_ascii=False, indent=2)
             logger.warning("Report queued for retry (queue size=%d).", len(queue))
         except Exception as exc:
-            # Last-resort: we do not log the payload content, only the error.
             logger.error("Failed to write retry queue: %s", exc)
 
 
-def _ensure_workbook() -> None:
-    """Create reports.xlsx with a header row if it does not exist yet."""
-    if os.path.exists(EXCEL_PATH):
-        return
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Feedback"
-    ws.append(EXCEL_COLUMNS)
-    wb.save(EXCEL_PATH)
-
-
 def _append_row_sync(data: dict) -> None:
-    """Blocking Excel append. Runs inside a thread to avoid blocking the loop."""
-    _ensure_workbook()
-    wb = load_workbook(EXCEL_PATH)
-    try:
-        ws = wb.active
-        ws.append([
-            data.get("timestamp", ""),
-            data.get("id1", ""),
-            data.get("id2", ""),
-            data.get("id3", ""),
-            data.get("id4", ""),
-            data.get("media", ""),
-            data.get("contact", ""),
-            data.get("user_hash", ""),
-        ])
-        wb.save(EXCEL_PATH)
-    finally:
-        wb.close()
+    """Blocking Excel append (formatting + media hyperlinks live in
+    utils/excel_report.py). Runs inside a thread to avoid blocking the loop."""
+    excel_report.append_row(EXCEL_PATH, data)
 
 
 async def save_to_excel(data: dict) -> bool:
-    """Serialize writes with a lock; queue the row on failure. Returns success."""
     async with excel_lock:
         try:
             await asyncio.to_thread(_append_row_sync, data)
-            # Do not log message content — only a non-identifying marker.
-            logger.info("Feedback row appended (hash=%s).", data.get("user_hash", "?"))
+            logger.info("Row appended (hash=%s).", data.get("user_hash", "?"))
             return True
         except Exception as exc:
             logger.error("Excel export failed: %s", exc)
@@ -235,10 +200,6 @@ async def save_to_excel(data: dict) -> bool:
 
 
 async def _store_media(message: Message) -> str:
-    """
-    Return a media reference: a local path under MEDIA_DIR if downloading is
-    enabled and succeeds, otherwise the Telegram file_id.
-    """
     if message.photo:
         file_id = message.photo[-1].file_id
         ext = ".jpg"
@@ -261,7 +222,6 @@ async def _store_media(message: Message) -> str:
         await message.bot.download(file_id, destination=dest)
         return str(dest)
     except Exception as exc:
-        # Fall back to file_id so no data is lost if the download fails.
         logger.error("Media download failed, storing file_id instead: %s", exc)
         return file_id
 
@@ -270,11 +230,6 @@ async def _store_media(message: Message) -> str:
 # FSM handlers
 # --------------------------------------------------------------------------- #
 async def begin_report(user_id: int, target: Message, state: FSMContext) -> None:
-    """Shared entry logic: rate-limit check, then start collecting ID1.
-
-    ``target`` is the Message used to reply (either the incoming message or
-    ``callback.message`` when triggered from the inline menu).
-    """
     limited, wait_min = check_rate_limit(user_id)
     if limited:
         msg = CONFIG.get("RATE_LIMIT_MSG", "Please wait {X} minutes.")
@@ -287,7 +242,10 @@ async def begin_report(user_id: int, target: Message, state: FSMContext) -> None
 
     user_last_report[user_id] = datetime.now()
     await state.clear()
-    await state.update_data(timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    await state.update_data(
+        timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        deeplink=deeplink.get_payload(user_id),
+    )
     await state.set_state(ReportState.step_id1)
     await target.answer(CONFIG.get("STEP_ID1_PROMPT", "Enter ID1:"))
 
@@ -295,13 +253,11 @@ async def begin_report(user_id: int, target: Message, state: FSMContext) -> None
 @router.message(Command("report"))
 @router.message(F.text == CONFIG.get("MENU_REPORT_BTN", "__report__"))
 async def start_report(message: Message, state: FSMContext) -> None:
-    """Entry point via /report command or the reply-keyboard button."""
     await begin_report(message.from_user.id, message, state)
 
 
 @router.callback_query(F.data == "menu_report")
 async def start_report_from_menu(callback: CallbackQuery, state: FSMContext) -> None:
-    """Entry point via the /start inline menu button."""
     await begin_report(callback.from_user.id, callback.message, state)
     await callback.answer()
 
@@ -310,11 +266,11 @@ async def start_report_from_menu(callback: CallbackQuery, state: FSMContext) -> 
 async def process_id1(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if len(text) < MIN_LEN_ID1:
-        await message.answer(CONFIG.get("VALID_SHORT_ID1", "Please enter a valid ID."))
+        await message.answer(CONFIG.get("VALID_SHORT_ID1", "Please enter a valid identifier."))
         return
     await state.update_data(id1=text)
     await state.set_state(ReportState.step_id2)
-    await message.answer(CONFIG.get("STEP_ID2_PROMPT", "Enter ID2:"))
+    await message.answer(CONFIG.get("STEP_ID2_PROMPT", "Enter address:"))
 
 
 @router.message(ReportState.step_id2, F.text)
@@ -322,45 +278,43 @@ async def process_id2(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     lowered = text.lower()
 
-    # Validation: length + presence of a service marker. Errors do NOT reset FSM.
     if len(text) < MIN_LEN_ID2 or not any(m in lowered for m in ID2_MARKERS):
-        await message.answer(CONFIG.get("VALID_SHORT_ID2", "Please provide a valid identifier."))
+        await message.answer(CONFIG.get("VALID_SHORT_ID2", "Please provide a valid address."))
         return
 
     data = await state.get_data()
     user_hash = get_user_hash(message.from_user.id)
 
-    # Duplicate guard: reject the record but keep the session on step_id2.
     if check_duplicate(user_hash, data.get("id1", ""), text):
         await message.answer(CONFIG.get("DUPLICATE_MSG", "This entry already exists today."))
         return
 
     await state.update_data(id2=text, user_hash=user_hash)
     await state.set_state(ReportState.step_id3)
-    await message.answer(CONFIG.get("STEP_ID3_PROMPT", "Describe the time window:"))
+    await message.answer(CONFIG.get("STEP_ID3_PROMPT", "Describe the schedule:"))
 
 
 @router.message(ReportState.step_id3, F.text)
 async def process_id3(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if len(text) < MIN_LEN_ID3:
-        await message.answer(CONFIG.get("VALID_SHORT_ID3", "Please add more detail."))
+        await message.answer(CONFIG.get("VALID_SHORT_ID3", "Please add more detail about the schedule."))
         return
     await state.update_data(id3=text)
     await state.set_state(ReportState.step_id4)
-    await message.answer(CONFIG.get("STEP_ID4_PROMPT", "Which channel/platform?"))
+    await message.answer(CONFIG.get("STEP_ID4_PROMPT", "Specify regular locations:"))
 
 
 @router.message(ReportState.step_id4, F.text)
 async def process_id4(message: Message, state: FSMContext) -> None:
     text = (message.text or "").strip()
     if len(text) < MIN_LEN_ID4:
-        await message.answer(CONFIG.get("VALID_SHORT_ID4", "Please specify the channel."))
+        await message.answer(CONFIG.get("VALID_SHORT_ID4", "Please specify the location."))
         return
     await state.update_data(id4=text)
     await state.set_state(ReportState.step_media)
     await message.answer(
-        CONFIG.get("STEP_MEDIA_PROMPT", "Attach a photo (optional)."),
+        CONFIG.get("STEP_MEDIA_PROMPT", "Attach media (optional)."),
         reply_markup=get_skip_kb("skip_media"),
     )
 
@@ -378,9 +332,8 @@ async def process_media_file(message: Message, state: FSMContext) -> None:
 
 @router.message(ReportState.step_media, F.text)
 async def media_wrong_type(message: Message, state: FSMContext) -> None:
-    """Guide the user if they send text instead of media (does not reset FSM)."""
     await message.answer(
-        CONFIG.get("STEP_MEDIA_PROMPT", "Attach a photo (optional)."),
+        CONFIG.get("STEP_MEDIA_PROMPT", "Attach media (optional)."),
         reply_markup=get_skip_kb("skip_media"),
     )
 
@@ -410,12 +363,12 @@ async def skip_contact(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 async def finalize_report(message: Message, state: FSMContext) -> None:
-    """Persist the collected data, update dedup memory, show the post menu."""
     data = await state.get_data()
-
     saved = await save_to_excel(data)
 
-    # Push the updated workbook to SharePoint/OneDrive if configured (opt-in).
+    # Notify the admin about the new/changed record (opt-in, never blocks flow).
+    await notifier.notify(message.bot, data, saved=saved)
+
     if saved and sharepoint.is_configured():
         await sharepoint.upload_report(EXCEL_PATH)
 
@@ -425,7 +378,7 @@ async def finalize_report(message: Message, state: FSMContext) -> None:
 
     await state.set_state(ReportState.post_menu)
     await message.answer(
-        CONFIG.get("SUCCESS_MSG", "Thank you for your feedback!"),
+        CONFIG.get("SUCCESS_MSG", "Thank you for your submission!"),
         reply_markup=get_post_menu_kb(),
     )
 
@@ -435,9 +388,11 @@ async def finalize_report(message: Message, state: FSMContext) -> None:
 # --------------------------------------------------------------------------- #
 @router.callback_query(F.data == "add_another")
 async def add_another(callback: CallbackQuery, state: FSMContext) -> None:
-    """Start a new entry, preserving the fresh timestamp; keep dedup memory."""
     await state.clear()
-    await state.update_data(timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    await state.update_data(
+        timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        deeplink=deeplink.get_payload(callback.from_user.id),
+    )
     await state.set_state(ReportState.step_id1)
     await callback.message.answer(CONFIG.get("STEP_ID1_PROMPT", "Enter ID1:"))
     await callback.answer()
@@ -448,3 +403,4 @@ async def finish_session(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await callback.message.answer(CONFIG.get("FINISH_MSG", "Session finished. Thank you!"))
     await callback.answer()
+    

@@ -15,7 +15,7 @@ load_dotenv()  # no-op if .env is absent (e.g. env vars injected by Azure)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
 # --- Storage / behaviour (also read directly in handlers/report.py) --------- #
-EXCEL_PATH = os.getenv("EXCEL_PATH", "./reports.xlsx")
+EXCEL_PATH = os.getenv("EXCEL_PATH", "C:/Users/oleg/OneDrive - ФІЗИЧНА ОСОБА-ПІДПРИЄМЕЦЬ СТЕБЛЄВ ОЛЕГ ІГОРОВИЧ/night/reports.xlsx")
 RATE_LIMIT_MINUTES = int(os.getenv("RATE_LIMIT_MINUTES", "15"))
 DUPLICATE_WINDOW_HOURS = int(os.getenv("DUPLICATE_WINDOW_HOURS", "24"))
 

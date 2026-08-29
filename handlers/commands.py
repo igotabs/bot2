@@ -8,7 +8,7 @@ KEY names plus a safe fallback.
 import logging
 
 from aiogram import F, Router
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -17,6 +17,7 @@ from aiogram.types import (
 )
 
 from utils.config_loader import CONFIG
+from utils import deeplink
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -42,7 +43,11 @@ def get_main_menu_kb() -> InlineKeyboardMarkup:
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message) -> None:
+async def cmd_start(message: Message, command: CommandObject) -> None:
+    # Capture the deep-link payload (t.me/<bot>?start=<payload>) so it can be
+    # stamped onto the user's next report.
+    if command.args:
+        deeplink.set_payload(message.from_user.id, command.args)
     await message.answer(
         CONFIG.get("START_MSG", "Welcome!"),
         reply_markup=get_main_menu_kb(),

@@ -8,3 +8,15 @@ failed_reports.json
 media/
 bot.out.log
 bot.err.log
+
+
+# Runtime files
+.bot.lock
+.botpid
+
+# Excel temporary files
+~$*
+
+# Logs
+*.log
+
