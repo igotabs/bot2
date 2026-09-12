@@ -1,0 +1,71 @@
+# =========================================================================== #
+# Continuous-delivery deployment for the Telegram bot on an Ubuntu VPS.
+#
+# Reports and media are written to a LOCAL folder (./data on the host), which is
+# bind-mounted into the container. No SMB share, no SharePoint, no OneDrive.
+#
+# Deploy / redeploy on the VPS (this is what your CD step runs):
+#     git pull
+#     docker compose --env-file .secrets up -d --build
+#
+# The `--env-file .secrets` makes Compose inject credentials from .secrets into
+# the container (via env_file below).
+#
+# One-time host prerequisites on the Ubuntu VPS:
+#     sudo apt-get update && sudo apt-get install -y docker.io docker-compose-plugin
+# =========================================================================== #
+
+services:
+  bot:
+    build: .
+    image: gorbachov-bot:latest
+    container_name: gorbachov-bot
+    # CD-friendly: always bring the bot back after crashes / VPS reboots.
+    restart: unless-stopped
+    init: true                      # proper SIGTERM handling for clean restarts
+    stop_grace_period: 20s
+
+    # Confidential values (BOT_TOKEN, NOTIFY_*) come from .secrets.
+    # Non-secret operational config is set inline below.
+    env_file:
+      - .secrets
+
+    environment:
+      # Report workbook + media live in the local ./data folder (bind-mounted).
+      EXCEL_PATH: /data/reports/reports.xlsx
+      MEDIA_DIR: /data/reports/media
+      SAVE_MEDIA_FILES: "1"
+      # Runtime state (retry queue, dedup memory, deep-link map, lock file).
+      QUEUE_PATH: /data/state/failed_reports.json
+      NOTIFY_SEEN_PATH: /data/state/notified_ids.json
+      DEEPLINK_PATH: /data/state/deeplinks.json
+      LOCK_PATH: /data/state/.bot.lock
+      # Behaviour
+      RATE_LIMIT_MINUTES: "15"
+      DUPLICATE_WINDOW_HOURS: "24"
+      LOG_LEVEL: INFO
+      # UI-text source file baked into the image (optional; falls back to
+      # built-in defaults if the file is absent).
+      CONFIG_FILE: /app/secret.xlsx
+
+    # Make sure the folders exist, then run the bot.
+    command: sh -c "mkdir -p /data/reports/media /data/state && exec python -u main.py"
+
+    volumes:
+      # Everything persistent lives in ./data next to this compose file.
+      # reports.xlsx ends up at ./data/reports/reports.xlsx on the VPS host.
+      - ./data:/data
+
+    # No HTTP endpoint — health = the single-instance lock file exists.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys; sys.exit(0 if os.path.exists('/data/state/.bot.lock') else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -24,7 +25,8 @@ logger = logging.getLogger(__name__)
 
 # Telegram allows only A-Z a-z 0-9 _ - in a start payload (max 64 chars).
 _VALID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-_STORE_PATH = Path("./deeplinks.json")
+# Path is configurable so it can live on a persistent volume in containers.
+_STORE_PATH = Path(os.getenv("DEEPLINK_PATH", "./deeplinks.json"))
 
 # user_id -> {"payload": str, "ts": iso}
 _payloads: Optional[Dict[str, dict]] = None

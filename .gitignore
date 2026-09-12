@@ -1,11 +1,15 @@
 .env
+.secrets
 .venv/
 venv/
 __pycache__/
 *.pyc
 reports.xlsx
 failed_reports.json
+notified_ids.json
+deeplinks.json
 media/
+data/
 bot.out.log
 bot.err.log
 
