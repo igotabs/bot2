@@ -1,12 +1,12 @@
 # Деплой бота на VPS (Ubuntu) як контейнер
 
-VPS: `195.226.192.56` · Репозиторій: `https://github.com/igotabs/bot2.git`
+VPS: `{ip}` · Репозиторій: `https://github.com/igotabs/bot2.git`
 
 Усі звіти пишуться в локальну папку `./data/reports/` на самому VPS (без SMB-шари, SharePoint чи OneDrive).
 
 ## 1. Підключитися до VPS
 ```bash
-ssh root@195.226.192.56
+ssh root@{ip}
 ```
 
 ## 2. Встановити Docker і git (одноразово)
